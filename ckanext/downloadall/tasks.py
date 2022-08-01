@@ -11,16 +11,16 @@ import ckanapi
 import ckanapi.datapackage
 
 from ckan import model
-import ckan.plugins.toolkit as toolkit
-from ckan.common import _, config, g, c
+from ckan.plugins.toolkit import get_action, config
+
 
 log = __import__('logging').getLogger(__name__)
+
 
 def update_zip(package_id, skip_if_no_changes=True):
     '''
     Create/update the a dataset's zip resource, containing the other resources
     and some metadata.
-
     :param skip_if_no_changes: If true, and there is an existing zip for this
         dataset, it will compare a freshly generated package.json against what
         is in the existing zip, and if there are no changes (ignoring the
@@ -28,19 +28,15 @@ def update_zip(package_id, skip_if_no_changes=True):
         updating the zip.
     '''
     # TODO deal with private datasets - 'ignore_auth': True
-    site_user = toolkit.get_action('get_site_user')({'ignore_auth': True}, {})
-    log.info("SITE USER: {}".format(site_user))
     context = {
         'model': model,
         'session': model.Session,
         'ignore_auth': True,
-        'user': site_user['name'],
     }
-    dataset = toolkit.get_action('package_show')(context, {'id': package_id})
+    dataset = get_action('package_show')(context, {'id': package_id})
     log.debug('Updating zip: {}'.format(dataset['name']))
 
-    datapackage, resources_to_include, datapackage_res, existing_zip_resource, ckan_and_datapackage_resources = \
-        generate_datapackage_json(package_id)
+    datapackage, ckan_and_datapackage_resources, existing_zip_resource = generate_datapackage_json(package_id)
 
     if skip_if_no_changes and existing_zip_resource and \
             not has_datapackage_changed_significantly(
@@ -51,57 +47,33 @@ def update_zip(package_id, skip_if_no_changes=True):
         return
 
     prefix = "{}-".format(dataset[u'name'])
-    fp = dataset[u'name'] + '.zip'
-    write_zip(fp, datapackage, resources_to_include, datapackage_res)
 
-    # Upload resource to CKAN as a new/updated resource
-    log.info(fp)
-    site_user = toolkit.get_action('get_site_user')({'ignore_auth': True}, {})
-    log.info("SITE USER: {}".format(site_user))
-    context = {
-        'model': model,
-        'session': model.Session,
-        'ignore_auth': True,
-        'user': site_user['name'],
-    }
+    with tempfile.NamedTemporaryFile(prefix=prefix, suffix='.zip') as fp:
+        write_zip(fp, datapackage, ckan_and_datapackage_resources)
+        # Upload resource to CKAN as a new/updated resource
+        site_user = get_action('get_site_user')({'ignore_auth': True}, {})
+        RemoteCKAN = ckanapi.RemoteCKAN(config.get('ckan.site_url'), apikey=site_user['apikey'])
+        fp.seek(0)
+        resource = dict(
+            package_id=dataset['id'],
+            url='dummy-value',
+            upload=fp,
+            name=u'All resource data',
+            format=u'ZIP',
+            downloadall_metadata_modified=dataset['metadata_modified'],
+            downloadall_datapackage_hash=hash_datapackage(datapackage)
+        )
 
-    if not existing_zip_resource:
-        log.info("CREATING ZIP RESOURCE")
-        # create a new resource
-        data_dict = {"package_id":dataset['id'],
-            "name": u'All resource data',
-            "upload": open(fp, 'rb'),
-            "url_type": "upload",
-            "format": u'ZIP',
-            "downloadall_metadata_modified": dataset['metadata_modified'],
-            "downloadall_datapackage_hash": hash_datapackage(datapackage)
-        }
-        log.debug('Writing new zip resource - {}'.format(dataset['name']))
-        try:
-            toolkit.get_action('resource_create')(context, data_dict)
-        except Exception as e:
-            log.error('Error creating zip resource: {}'.format(e))
-            raise
-    else:
-        log.info("UPDATING ZIP RESOURCE")
-        # update an existing resource
-        # TODO update the existing zip resource (using patch?)
-        data_dict = {"id":existing_zip_resource['id'],
-            "upload": open(fp, 'rb'),
-            "url_type": "upload",
-            "downloadall_metadata_modified": dataset['metadata_modified'],
-            "downloadall_datapackage_hash": hash_datapackage(datapackage)
-        }
+        if not existing_zip_resource:
+            log.debug('Writing new zip resource - {}'.format(dataset['name']))
+            RemoteCKAN.action.resource_create(**resource)
+        else:
+            # TODO update the existing zip resource (using patch?)
+            log.debug('Updating zip resource - {}'.format(dataset['name']))
+            RemoteCKAN.action.resource_patch(
+                id=existing_zip_resource['id'],
+                **resource)
 
-        log.debug('Updating zip resource - {}'.format(dataset['name']))
-        # user = context["user"]
-        # log.info("USER: {}".format(user))
-        try:
-            toolkit.get_action('resource_patch')(context, data_dict)
-        except Exception as e:
-            log.error('Error updating zip resource: {}'.format(e))
-            raise
-    os.remove(fp)
 
 
 class DownloadError(Exception):
@@ -112,7 +84,6 @@ def has_datapackage_changed_significantly(
         datapackage, ckan_and_datapackage_resources, existing_zip_resource):
     '''Compare the freshly generated datapackage with the existing one and work
     out if it is changed enough to warrant regenerating the zip.
-
     :returns bool: True if the data package has really changed and needs
         regenerating
     '''
@@ -180,7 +151,7 @@ def generate_datapackage_json(package_id):
     datapackage.json.
     '''
     context = {'model': model, 'session': model.Session}
-    dataset = toolkit.get_action('package_show')(
+    dataset = get_action('package_show')(
         context, {'id': package_id})
 
     # filter out resources that are not suitable for inclusion in the data
@@ -196,34 +167,38 @@ def generate_datapackage_json(package_id):
     # dictionary
     ckan_and_datapackage_resources = zip(resources_to_include,
                                          datapackage.get('resources', []))
-    datapackage_res = datapackage.get('resources', [])
+
+    print(ckan_and_datapackage_resources)
+
+    for res, datapackage_res in ckan_and_datapackage_resources:
+        ckanapi.datapackage.populate_datastore_res_fields(
+            ckan=local_ckan, res=res)
+        ckanapi.datapackage.populate_schema_from_datastore(
+            cres=res, dres=datapackage_res)
 
     # add in any other dataset fields, if configured
-    fields_to_include = toolkit.config.get(
+    fields_to_include = config.get(
         u'ckanext.downloadall.dataset_fields_to_add_to_datapackage',
         u'').split()
     for key in fields_to_include:
-        datapackage[key] = dataset.get(key)
+        datapackage[key] = dataset.get(key)    
     
-    return (datapackage, resources_to_include, datapackage_res,
-            existing_zip_resource, ckan_and_datapackage_resources)
+    return (datapackage, zip(resources_to_include, datapackage.get('resources', [])),
+            existing_zip_resource)
 
 
-def write_zip(fp, datapackage, resources_to_include, datapackage_res):
+def write_zip(fp, datapackage, ckan_and_datapackage_resources):
     '''
     Downloads resources and writes the zip file.
-
     :param fp: Open file that the zip can be written to
     '''
     with zipfile.ZipFile(fp, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) \
             as zipf:
         i = 0
-        for res, dres in zip(resources_to_include, datapackage_res):
-            log.info(res)
+        for res, dres in ckan_and_datapackage_resources:
             i += 1
-            log.debug('Downloading resource {}/{}: {}'
-                      .format(i, len(resources_to_include),
-                              res['url']))
+            log.debug('Downloading resource {}: {}'
+                      .format(i, res['url']))
             filename = \
                 ckanapi.datapackage.resource_filename(dres)
             try:
@@ -240,10 +215,10 @@ def write_zip(fp, datapackage, resources_to_include, datapackage_res):
         # Add the datapackage.json
         write_datapackage_json(datapackage, zipf)
 
-    statinfo = os.stat(os.getcwd() + "/" + fp)
+    statinfo = os.stat(fp.name)
     filesize = statinfo.st_size
 
-    log.info('Zip created: {} {} bytes'.format(fp, filesize))
+    log.info('Zip created: {} {} bytes'.format(fp.name, filesize))
 
     return filesize
 
@@ -262,7 +237,6 @@ def save_local_path_in_datapackage_resource(datapackage_resource, res,
 def download_resource_into_zip(url, filename, zipf):
     try:
         r = requests.get(url, stream=True)
-        log.info('Downloading {}'.format(url))
         r.raise_for_status()
     except requests.ConnectionError:
         log.error('URL {url} refused connection. The resource will not'

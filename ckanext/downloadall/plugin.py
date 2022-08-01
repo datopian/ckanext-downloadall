@@ -7,9 +7,9 @@ from ckan.lib.plugins import DefaultTranslation
 
 from ckan import model
 
-from tasks import update_zip
-import helpers
-import action
+from .tasks import update_zip
+from . import helpers
+from . import action
 
 
 log = __import__('logging').getLogger(__name__)

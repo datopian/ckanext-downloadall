@@ -2,22 +2,22 @@
 
 import click
 
-try:
-    # CKAN 2.9+
-    from ckan.cli import (
-        click_config_option, load_config
-    )
-except ImportError:
-    # CKAN 2.7, 2.8
-    from ckan.lib.cli import click_config_option
-    from ckan.lib.cli import _get_config as load_config
+# try:
+#     # CKAN 2.9+
+from ckan.cli import (
+    click_config_option, load_config
+)
+# except ImportError:
+#     # CKAN 2.7, 2.8
+#     from ckan.lib.cli import click_config_option
+#     from ckan.lib.cli import _get_config as load_config
 
 from ckan.config.middleware import make_app
 import ckan.plugins.toolkit as toolkit
 from ckan import model
 from ckan.lib.jobs import DEFAULT_QUEUE_NAME
 
-import tasks
+from . import tasks
 
 
 class MockTranslator(object):

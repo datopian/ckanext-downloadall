@@ -9,6 +9,7 @@ import requests
 import six
 import ckanapi
 import ckanapi.datapackage
+from werkzeug.datastructures import FileStorage
 
 from ckan import model
 from ckan.plugins.toolkit import get_action, config
@@ -32,6 +33,7 @@ def update_zip(package_id, skip_if_no_changes=True):
         'model': model,
         'session': model.Session,
         'ignore_auth': True,
+        'user': get_action('get_site_user')({'ignore_auth': True})['name'],
     }
     dataset = get_action('package_show')(context, {'id': package_id})
     log.debug('Updating zip: {}'.format(dataset['name']))
@@ -51,13 +53,11 @@ def update_zip(package_id, skip_if_no_changes=True):
     with tempfile.NamedTemporaryFile(prefix=prefix, suffix='.zip') as fp:
         write_zip(fp, datapackage, ckan_and_datapackage_resources)
         # Upload resource to CKAN as a new/updated resource
-        site_user = get_action('get_site_user')({'ignore_auth': True}, {})
-        RemoteCKAN = ckanapi.RemoteCKAN(config.get('ckan.site_url'), apikey=site_user['apikey'])
         fp.seek(0)
         resource = dict(
             package_id=dataset['id'],
             url='dummy-value',
-            upload=fp,
+            upload=FileStorage(fp),
             name=u'All resource data',
             format=u'ZIP',
             downloadall_metadata_modified=dataset['metadata_modified'],
@@ -66,13 +66,12 @@ def update_zip(package_id, skip_if_no_changes=True):
 
         if not existing_zip_resource:
             log.debug('Writing new zip resource - {}'.format(dataset['name']))
-            RemoteCKAN.action.resource_create(**resource)
+            get_action('resource_create')(context, resource)
         else:
             # TODO update the existing zip resource (using patch?)
             log.debug('Updating zip resource - {}'.format(dataset['name']))
-            RemoteCKAN.action.resource_patch(
-                id=existing_zip_resource['id'],
-                **resource)
+            resource['id'] = existing_zip_resource['id']
+            get_action('resource_patch')(context, resource)
 
 
 
@@ -150,7 +149,12 @@ def generate_datapackage_json(package_id):
     '''Generates the datapackage - metadata that would be saved as
     datapackage.json.
     '''
-    context = {'model': model, 'session': model.Session}
+    context = {
+        'model': model,
+        'session': model.Session,
+        'ignore_auth': True,
+        'user': get_action('get_site_user')({'ignore_auth': True})['name'],
+    }
     dataset = get_action('package_show')(
         context, {'id': package_id})
 
@@ -168,7 +172,6 @@ def generate_datapackage_json(package_id):
     ckan_and_datapackage_resources = zip(resources_to_include,
                                          datapackage.get('resources', []))
 
-    print(ckan_and_datapackage_resources)
 
     for res, datapackage_res in ckan_and_datapackage_resources:
         ckanapi.datapackage.populate_datastore_res_fields(

@@ -84,7 +84,7 @@ setup(
             'ckan = ckan.lib.extract:extract_ckan',
         ],
         'console_scripts': [
-            'downloadall = ckanext.downloadall.cli:cli',
+            'downloadall = ckanext.downloadall.cli:downloadall',
         ],
     },
 

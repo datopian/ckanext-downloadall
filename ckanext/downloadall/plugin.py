@@ -11,6 +11,7 @@ from .tasks import update_zip
 from . import helpers
 from . import action
 
+from ckanext.downloadall.cli import get_commands
 
 log = __import__('logging').getLogger(__name__)
 
@@ -22,6 +23,7 @@ class DownloadallPlugin(plugins.SingletonPlugin, DefaultTranslation):
     plugins.implements(plugins.ITemplateHelpers)
     plugins.implements(plugins.IPackageController, inherit=True)
     plugins.implements(plugins.IActions)
+    plugins.implements(plugins.IClick)
 
     # IConfigurer
 
@@ -103,7 +105,11 @@ class DownloadallPlugin(plugins.SingletonPlugin, DefaultTranslation):
             # action, to update the zip when it is called
             actions['datastore_create'] = action.datastore_create
         return actions
+       
+    # IClick
 
+    def get_commands(self):
+        return get_commands()
 
 def enqueue_update_zip(dataset_name, dataset_id, operation):
     # skip task if the dataset is already queued

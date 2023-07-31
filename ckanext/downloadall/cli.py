@@ -40,5 +40,8 @@ def update_all_zips():
     datasets = get_action('package_list')(context, {})
     for i, dataset_name in enumerate(datasets):
         print('Processing dataset {}/{}'.format(i + 1, len(datasets)))
-        tasks.update_zip(dataset_name)
+        try:
+            tasks.update_zip(dataset_name)
+        except Exception as e:
+            print('Failed to process dataset {}: {}'.format(dataset_name, e))
     click.secho(u'update-all-zips: SUCCESS', fg=u'green', bold=True)

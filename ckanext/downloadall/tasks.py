@@ -202,8 +202,15 @@ def write_zip(fp, datapackage, ckan_and_datapackage_resources):
             i += 1
             log.debug('Downloading resource {}: {}'
                       .format(i, res['url']))
-            filename = \
-                ckanapi.datapackage.resource_filename(dres)
+            try:
+                filename = \
+                    ckanapi.datapackage.resource_filename(dres)
+            except KeyError:
+                # TODO deal with this
+                log.error('Resource {} has no name - skipping'
+                          .format(res['url']))
+                continue
+
             try:
                 download_resource_into_zip(res['url'], filename, zipf)
             except DownloadError:
@@ -307,6 +314,7 @@ def remove_resources_that_should_not_be_included_in_the_datapackage(dataset):
     existing_zip_resource = None
     resources_to_include = []
     for i, res in enumerate(dataset['resources']):
+
         if res.get('downloadall_metadata_modified'):
             # this is an existing zip of all the other resources
             log.debug('Resource resource {}/{} skipped - is the zip itself'

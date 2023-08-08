@@ -203,6 +203,7 @@ def write_zip(fp, datapackage, ckan_and_datapackage_resources):
             log.debug('Downloading resource {}: {}'
                       .format(i, res['url']))
             try:
+                dres['format'] = dres.get('format', '')
                 filename = \
                     ckanapi.datapackage.resource_filename(dres)
             except KeyError:

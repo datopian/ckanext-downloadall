@@ -1,23 +1,6 @@
 {% ckan_extends %}
 
 {% block package_resources %}
-
-  {% set zip_res = h.downloadall__pop_zip_resource(pkg) %}
-  {# Only show Download All button if there are 2 or more resources #}
-  {% if pkg.resources and pkg.resources|length > 1 %}
-    <div class="btn-group" style="float:right; margin-top: -7px;">
-
-      {% if zip_res %}
-        <a class="btn btn-primary resource-url-analytics resource-type-{{ zip_res.resource_type }}" href="{{ zip_res.url }}">
-      {% else %}
-        <a class="btn btn-primary" disabled="disabled" title="{{ _('This download is not currently available') }}" href="#">
-      {% endif %}
-          <i class="fa fa-arrow-circle-o-down"></i> {{ _('Download all') }}
-        </a>
-
-    </div>
-  {% endif %}
-
+  {# Download all button moved to action buttons section #}
   {{ super() }}
-
 {% endblock %}

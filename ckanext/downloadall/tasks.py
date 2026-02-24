@@ -13,6 +13,7 @@ from werkzeug.datastructures import FileStorage
 
 from ckan import model
 from ckan.plugins.toolkit import get_action, config
+from ckan.lib import uploader
 
 
 log = __import__('logging').getLogger(__name__)
@@ -213,7 +214,10 @@ def write_zip(fp, datapackage, ckan_and_datapackage_resources):
                 continue
 
             try:
-                download_resource_into_zip(res['url'], filename, zipf)
+                download_resource_into_zip(
+                    res['url'], filename, zipf,
+                    resource_id=res.get('id'),
+                    package_id=res.get('package_id'))
             except DownloadError:
                 # The dres['path'] is left as the url - i.e. an 'external
                 # resource' of the data package.
@@ -245,7 +249,49 @@ def save_local_path_in_datapackage_resource(datapackage_resource, res,
     datapackage_resource['path'] = filename
 
 
-def download_resource_into_zip(url, filename, zipf):
+def download_resource_into_zip(url, filename, zipf, resource_id=None,
+                               package_id=None):
+    # Try to get the resource from local storage first
+    if resource_id and package_id:
+        try:
+            context = {
+                'model': model,
+                'session': model.Session,
+                'ignore_auth': True,
+                'user': get_action('get_site_user')(
+                    {'ignore_auth': True})['name'],
+            }
+            resource_dict = get_action('resource_show')(
+                context, {'id': resource_id})
+            
+            # Check if this is an uploaded resource (not a link)
+            if resource_dict.get('url_type') == 'upload':
+                upload = uploader.get_resource_uploader(resource_dict)
+                filepath = upload.get_path(resource_id)
+                
+                if filepath and os.path.exists(filepath):
+                    log.debug('Using local file: {}'.format(filepath))
+                    hash_object = hashlib.md5()
+                    size = 0
+                    with open(filepath, 'rb') as local_file:
+                        with zipf.open(filename, 'w') as zf:
+                            for chunk in iter(
+                                    lambda: local_file.read(8192), b''):
+                                zf.write(chunk)
+                                hash_object.update(chunk)
+                                size += len(chunk)
+                    file_hash = hash_object.hexdigest()
+                    log.debug(
+                        'Added from local storage: {}, hash: {}'
+                        .format(format_bytes(size), file_hash))
+                    return
+        except Exception as e:
+            log.warning(
+                'Could not access local file for resource {}: {}. '
+                'Falling back to HTTP download.'
+                .format(resource_id, str(e)))
+    
+    # Fall back to HTTP download for remote resources or if local access fails
     try:
         r = requests.get(url, stream=True)
         r.raise_for_status()

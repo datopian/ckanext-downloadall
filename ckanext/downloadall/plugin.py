@@ -80,6 +80,8 @@ class DownloadallPlugin(plugins.SingletonPlugin, DefaultTranslation):
     def get_helpers(self):
         return {
             'downloadall__pop_zip_resource': helpers.pop_zip_resource,
+            'downloadall__count_uploaded_resources': helpers.count_uploaded_resources,
+            'downloadall__is_zip_up_to_date': helpers.is_zip_up_to_date,
         }
 
     # IPackageController

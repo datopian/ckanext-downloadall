@@ -4,6 +4,8 @@ import os
 import hashlib
 import math
 import copy
+import time
+from datetime import datetime
 
 import requests
 import six
@@ -17,6 +19,41 @@ from ckan.lib import uploader
 
 
 log = __import__('logging').getLogger(__name__)
+
+
+def parse_metadata_modified_to_date_time(metadata_modified):
+    '''
+    Convert a metadata_modified timestamp string to a tuple suitable for
+    zipfile.ZipInfo.date_time.
+    
+    :param metadata_modified: ISO format timestamp string (e.g., '2024-03-25T10:30:00.123456')
+    :return: Tuple of (year, month, day, hour, minute, second) or None if parsing fails
+    '''
+    if not metadata_modified:
+        log.debug('metadata_modified is empty or None')
+        return None
+    
+    log.debug('Attempting to parse metadata_modified: "{}"'.format(metadata_modified))
+    
+    try:
+        # Parse ISO format timestamp (handles both with and without microseconds)
+        if 'T' in metadata_modified:
+            # ISO format with T separator
+            dt_str = metadata_modified.split('.')[0]  # Remove microseconds if present
+            log.debug('After removing microseconds: "{}"'.format(dt_str))
+            dt = datetime.strptime(dt_str, '%Y-%m-%dT%H:%M:%S')
+        else:
+            # Try parsing without time component
+            dt = datetime.strptime(metadata_modified.split()[0], '%Y-%m-%d')
+        
+        date_tuple = (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+        log.info('Successfully parsed metadata_modified "{}" to date_time: {}'.format(
+            metadata_modified, date_tuple))
+        return date_tuple
+    except (ValueError, AttributeError) as e:
+        log.error('Could not parse metadata_modified "{}": {}'.format(
+            metadata_modified, str(e)))
+        return None
 
 
 def update_zip(package_id, skip_if_no_changes=True):
@@ -52,7 +89,8 @@ def update_zip(package_id, skip_if_no_changes=True):
     prefix = "{}-".format(dataset[u'name'])
 
     with tempfile.NamedTemporaryFile(prefix=prefix, suffix='.zip') as fp:
-        write_zip(fp, datapackage, ckan_and_datapackage_resources)
+        write_zip(fp, datapackage, ckan_and_datapackage_resources, 
+                  dataset_metadata_modified=dataset.get('metadata_modified'))
         # Upload resource to CKAN as a new/updated resource
         fp.seek(0)
         resource = dict(
@@ -191,10 +229,12 @@ def generate_datapackage_json(package_id):
             existing_zip_resource)
 
 
-def write_zip(fp, datapackage, ckan_and_datapackage_resources):
+def write_zip(fp, datapackage, ckan_and_datapackage_resources, 
+              dataset_metadata_modified=None):
     '''
     Downloads resources and writes the zip file.
     :param fp: Open file that the zip can be written to
+    :param dataset_metadata_modified: Dataset's metadata_modified timestamp for datapackage.json
     '''
     with zipfile.ZipFile(fp, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) \
             as zipf:
@@ -217,7 +257,8 @@ def write_zip(fp, datapackage, ckan_and_datapackage_resources):
                 download_resource_into_zip(
                     res['url'], filename, zipf,
                     resource_id=res.get('id'),
-                    package_id=res.get('package_id'))
+                    package_id=res.get('package_id'),
+                    metadata_modified=res.get('metadata_modified'))
             except DownloadError:
                 # The dres['path'] is left as the url - i.e. an 'external
                 # resource' of the data package.
@@ -228,7 +269,7 @@ def write_zip(fp, datapackage, ckan_and_datapackage_resources):
             # TODO optimize using the file_hash
 
         # Add the datapackage.json
-        write_datapackage_json(datapackage, zipf)
+        write_datapackage_json(datapackage, zipf, dataset_metadata_modified)
 
     statinfo = os.stat(fp.name)
     filesize = statinfo.st_size
@@ -318,7 +359,7 @@ def check_resource_size_limit(size, url):
 
 
 def download_resource_into_zip(url, filename, zipf, resource_id=None,
-                               package_id=None):
+                               package_id=None, metadata_modified=None):
     # Try to get the resource from local storage first
     if resource_id and package_id:
         try:
@@ -331,6 +372,11 @@ def download_resource_into_zip(url, filename, zipf, resource_id=None,
             }
             resource_dict = get_action('resource_show')(
                 context, {'id': resource_id})
+            
+            # Get metadata_modified from resource_show
+            resource_metadata_modified = resource_dict.get('metadata_modified')
+            log.debug('Resource {} metadata_modified: {}'.format(
+                resource_id, resource_metadata_modified))
             
             # Check if this is an uploaded resource (not a link)
             if resource_dict.get('url_type') == 'upload':
@@ -345,16 +391,34 @@ def download_resource_into_zip(url, filename, zipf, resource_id=None,
                             'Resource exceeds maximum size limit')
                     
                     log.debug('Using local file: {}'.format(filepath))
-                    hash_object = hashlib.md5()
-                    size = 0
+                    
+                    # Read file content
                     with open(filepath, 'rb') as local_file:
-                        with zipf.open(filename, 'w') as zf:
-                            for chunk in iter(
-                                    lambda: local_file.read(8192), b''):
-                                zf.write(chunk)
-                                hash_object.update(chunk)
-                                size += len(chunk)
+                        file_content = local_file.read()
+                    
+                    # Calculate hash
+                    hash_object = hashlib.md5()
+                    hash_object.update(file_content)
                     file_hash = hash_object.hexdigest()
+                    size = len(file_content)
+                    
+                    # Create ZipInfo with proper timestamp from resource_show
+                    zinfo = zipfile.ZipInfo(filename=filename)
+                    date_time = parse_metadata_modified_to_date_time(resource_metadata_modified)
+                    if date_time:
+                        zinfo.date_time = date_time
+                        log.info('Successfully set ZipInfo.date_time for {} to {} (from metadata_modified: {})'.format(
+                            filename, zinfo.date_time, resource_metadata_modified))
+                    else:
+                        # Fallback to current time if parsing fails
+                        zinfo.date_time = time.localtime()[:6]
+                        log.warning('Using current time for {} - failed to parse metadata_modified'.format(filename))
+                    zinfo.compress_type = zipfile.ZIP_DEFLATED
+                    
+                    # Use writestr to properly preserve timestamp
+                    zipf.writestr(zinfo, file_content)
+                    log.info('Wrote {} bytes to ZIP with filename "{}"'.format(len(file_content), filename))
+                    
                     log.debug(
                         'Added from local storage: {}, hash: {}'
                         .format(format_bytes(size), file_hash))
@@ -394,36 +458,68 @@ def download_resource_into_zip(url, filename, zipf, resource_id=None,
                   .format(url=url, error=str(e)))
         raise DownloadError()
 
+    # Download content to memory
+    file_content = b''
     hash_object = hashlib.md5()
-    size = 0
-    try:
-        # python3 syntax - stream straight into the zip
-        with zipf.open(filename, 'w') as zf:
-            for chunk in r.iter_content(chunk_size=128):
-                zf.write(chunk)
-                hash_object.update(chunk)
-                size += len(chunk)
-    except RuntimeError:
-        # python2 syntax - need to save to disk first
-        with tempfile.NamedTemporaryFile() as datafile:
-            for chunk in r.iter_content(chunk_size=128):
-                datafile.write(chunk)
-                hash_object.update(chunk)
-                size += len(chunk)
-            datafile.flush()
-            # .write() streams the file into the zip
-            zipf.write(datafile.name, arcname=filename)
+    
+    for chunk in r.iter_content(chunk_size=8192):
+        file_content += chunk
+        hash_object.update(chunk)
+    
+    size = len(file_content)
     file_hash = hash_object.hexdigest()
+    
+    # Create ZipInfo with proper timestamp
+    # For remote resources, try to get metadata from resource_show if available
+    resource_metadata_modified = None
+    if resource_id:
+        try:
+            context = {
+                'model': model,
+                'session': model.Session,
+                'ignore_auth': True,
+                'user': get_action('get_site_user')(
+                    {'ignore_auth': True})['name'],
+            }
+            resource_dict = get_action('resource_show')(
+                context, {'id': resource_id})
+            resource_metadata_modified = resource_dict.get('metadata_modified')
+        except Exception:
+            # If we can't get resource_show, fall back to parameter
+            resource_metadata_modified = metadata_modified
+    else:
+        resource_metadata_modified = metadata_modified
+    
+    zinfo = zipfile.ZipInfo(filename=filename)
+    date_time = parse_metadata_modified_to_date_time(resource_metadata_modified)
+    if date_time:
+        zinfo.date_time = date_time
+        log.debug('Set timestamp for {} to {}'.format(filename, date_time))
+    else:
+        # Fallback to current time if parsing fails
+        zinfo.date_time = time.localtime()[:6]
+        log.warning('Using current time for {} - failed to parse metadata_modified'.format(filename))
+    zinfo.compress_type = zipfile.ZIP_DEFLATED
+    
+    # Use writestr to properly preserve timestamp
+    zipf.writestr(zinfo, file_content)
+    
     log.debug('Downloaded {}, hash: {}'
               .format(format_bytes(size), file_hash))
 
 
-def write_datapackage_json(datapackage, zipf):
-    with tempfile.NamedTemporaryFile() as json_file:
-        json_file.write(ckanapi.cli.utils.pretty_json(datapackage))
-        json_file.flush()
-        zipf.write(json_file.name, arcname='datapackage.json')
-        log.debug('Added datapackage.json from {}'.format(json_file.name))
+def write_datapackage_json(datapackage, zipf, metadata_modified=None):
+    # Create ZipInfo with proper timestamp for datapackage.json
+    zinfo = zipfile.ZipInfo(filename='datapackage.json')
+    date_time = parse_metadata_modified_to_date_time(metadata_modified)
+    if date_time:
+        zinfo.date_time = date_time
+    zinfo.compress_type = zipfile.ZIP_DEFLATED
+    
+    # Write the json content
+    json_content = ckanapi.cli.utils.pretty_json(datapackage)
+    zipf.writestr(zinfo, json_content)
+    log.debug('Added datapackage.json with timestamp from {}'.format(metadata_modified))
 
 
 def format_bytes(size_bytes):

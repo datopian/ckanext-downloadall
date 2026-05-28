@@ -4,6 +4,7 @@ import ckan.plugins as plugins
 import ckan.plugins.toolkit as toolkit
 from ckan.lib.jobs import DEFAULT_QUEUE_NAME
 from ckan.lib.plugins import DefaultTranslation
+from ckan.plugins.toolkit import get_action
 
 from ckan import model
 
@@ -60,9 +61,32 @@ class DownloadallPlugin(plugins.SingletonPlugin, DefaultTranslation):
         #         notify(package) too
         # 5 - will cause these notifies but package.json only in limit places
         #
-        # SO if package.json (not including Package Zip bits) remains the same
-        # then we don't need to regenerate zip.
+        # SO if package.json (not including Package Zip bits) remains
+        # the same then we don't need to regenerate zip.
         if isinstance(entity, model.Package):
+            # Check if this package update was triggered by the
+            # downloadall extension itself by comparing metadata_modified
+            # with the ZIP's downloadall_metadata_modified
+            try:
+                package_dict = get_action('package_show')(
+                    {'ignore_auth': True}, {'id': entity.id})
+                zip_res = None
+                for res in package_dict.get('resources', []):
+                    if res.get('downloadall_metadata_modified'):
+                        zip_res = res
+                        break
+                if (zip_res and
+                    zip_res.get('downloadall_metadata_modified') ==
+                        package_dict.get('metadata_modified')):
+                    log.debug(
+                        'Ignoring package update - triggered by '
+                        'downloadall extension itself')
+                    return
+            except Exception as e:
+                log.debug(
+                    'Could not check if package update was '
+                    'self-triggered: {}'.format(e))
+
             enqueue_update_zip(entity.name, entity.id, operation)
         elif isinstance(entity, model.Resource):
             if entity.extras.get('downloadall_metadata_modified'):

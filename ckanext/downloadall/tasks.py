@@ -310,7 +310,9 @@ def format_bytes(size_bytes):
 
 
 def remove_resources_that_should_not_be_included_in_the_datapackage(dataset):
-    resource_formats_to_ignore = ['API', 'api']  # TODO make it configurable
+    # Get configurable list of formats to ignore, defaults include WMS/WFS services
+    formats_to_ignore_config = config.get('ckanext.downloadall.formats_to_ignore', 'API api WMS_SRVC WFS_SRVC')
+    resource_formats_to_ignore = formats_to_ignore_config.split()
 
     existing_zip_resource = None
     resources_to_include = []
@@ -321,6 +323,12 @@ def remove_resources_that_should_not_be_included_in_the_datapackage(dataset):
             log.debug('Resource resource {}/{} skipped - is the zip itself'
                       .format(i + 1, len(dataset['resources'])))
             existing_zip_resource = res
+            continue
+
+        # Skip resources without a format
+        if not res.get('format'):
+            log.debug('Resource resource {}/{} skipped - no format specified'
+                      .format(i + 1, len(dataset['resources'])))
             continue
 
         if res['format'] in resource_formats_to_ignore:

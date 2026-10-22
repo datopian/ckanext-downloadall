@@ -39,6 +39,21 @@ def update_zip(package_id, skip_if_no_changes=True):
     log.debug('Updating zip: {}'.format(dataset['name']))
 
     datapackage, ckan_and_datapackage_resources, existing_zip_resource = generate_datapackage_json(package_id)
+    ckan_and_datapackage_resources = list(ckan_and_datapackage_resources)
+
+    if not ckan_and_datapackage_resources:
+        # a zip would only contain the datapackage.json, so don't create one,
+        # and remove any zip left over from when there were resources to
+        # include
+        if existing_zip_resource:
+            log.info('Deleting the zip - no resources to include: {}'
+                     .format(dataset['name']))
+            get_action('resource_delete')(
+                context, {'id': existing_zip_resource['id']})
+        else:
+            log.info('Skipping creating the zip - no resources to include: {}'
+                     .format(dataset['name']))
+        return
 
     if skip_if_no_changes and existing_zip_resource and \
             not has_datapackage_changed_significantly(
@@ -51,7 +66,14 @@ def update_zip(package_id, skip_if_no_changes=True):
     prefix = "{}-".format(dataset[u'name'])
 
     with tempfile.NamedTemporaryFile(prefix=prefix, suffix='.zip') as fp:
-        write_zip(fp, datapackage, ckan_and_datapackage_resources)
+        files_added = write_zip(fp, datapackage,
+                                ckan_and_datapackage_resources)
+        if not files_added:
+            # none of the downloads worked (possibly temporarily), so keep any
+            # existing zip rather than replacing it with an empty one
+            log.info('Skipping uploading the zip - no resources could be '
+                     'downloaded: {}'.format(dataset['name']))
+            return
         # Upload resource to CKAN as a new/updated resource
         fp.seek(0)
         resource = dict(
@@ -194,10 +216,12 @@ def write_zip(fp, datapackage, ckan_and_datapackage_resources):
     '''
     Downloads resources and writes the zip file.
     :param fp: Open file that the zip can be written to
+    :returns int: The number of resources downloaded into the zip
     '''
     with zipfile.ZipFile(fp, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) \
             as zipf:
         i = 0
+        files_added = 0
         for res, dres in ckan_and_datapackage_resources:
             i += 1
             log.debug('Downloading resource {}: {}'
@@ -220,6 +244,7 @@ def write_zip(fp, datapackage, ckan_and_datapackage_resources):
                 continue
 
             save_local_path_in_datapackage_resource(dres, res, filename)
+            files_added += 1
 
             # TODO optimize using the file_hash
 
@@ -229,9 +254,10 @@ def write_zip(fp, datapackage, ckan_and_datapackage_resources):
     statinfo = os.stat(fp.name)
     filesize = statinfo.st_size
 
-    log.info('Zip created: {} {} bytes'.format(fp.name, filesize))
+    log.info('Zip created: {} {} bytes, {} resources'
+             .format(fp.name, filesize, files_added))
 
-    return filesize
+    return files_added
 
 
 def save_local_path_in_datapackage_resource(datapackage_resource, res,
@@ -309,10 +335,23 @@ def format_bytes(size_bytes):
     return '{} {}'.format(s, size_name[i])
 
 
+def normalize_format(format_name):
+    '''Returns a canonical form of a resource format, so that short names and
+    EU file-type URIs can be compared, e.g. "wms_srvc" and
+    "http://publications.europa.eu/resource/authority/file-type/WMS_SRVC"
+    both become "WMS-SRVC".
+    '''
+    if not format_name:
+        return ''
+    return format_name.strip().rstrip('/').split('/')[-1] \
+        .replace('_', '-').upper()
+
+
 def remove_resources_that_should_not_be_included_in_the_datapackage(dataset):
     # Get configurable list of formats to ignore, defaults include WMS/WFS services
-    formats_to_ignore_config = config.get('ckanext.downloadall.formats_to_ignore', 'API api WMS_SRVC WFS_SRVC')
-    resource_formats_to_ignore = formats_to_ignore_config.split()
+    formats_to_ignore_config = config.get('ckanext.downloadall.formats_to_ignore', 'API WMS_SRVC WFS_SRVC')
+    resource_formats_to_ignore = set(
+        normalize_format(f) for f in formats_to_ignore_config.split())
 
     existing_zip_resource = None
     resources_to_include = []
@@ -331,7 +370,7 @@ def remove_resources_that_should_not_be_included_in_the_datapackage(dataset):
                       .format(i + 1, len(dataset['resources'])))
             continue
 
-        if res['format'] in resource_formats_to_ignore:
+        if normalize_format(res['format']) in resource_formats_to_ignore:
             log.debug('Resource resource {}/{} skipped - because it is '
                       'format {}'.format(i + 1, len(dataset['resources']),
                                          res['format']))

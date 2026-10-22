@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- Formats in ckanext.downloadall.formats_to_ignore are normalised before comparing, so case, "_" vs "-" and EU file-type URIs (e.g. http://publications.europa.eu/resource/authority/file-type/WMS_SRVC) don't need listing separately
+
+### Fixed
+- No zip is created when a dataset has no resources to include, and an existing zip is deleted in that case
+- An existing zip is no longer replaced by one containing only datapackage.json when none of the resources could be downloaded
+
 ## [0.1.0] - 2019-11-12
 
 ### Added

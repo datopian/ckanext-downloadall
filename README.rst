@@ -129,6 +129,13 @@ Config Settings
     # (optional, space separated list).
     ckanext.downloadall.dataset_fields_to_add_to_datapackage = district county
 
+    # Resource formats to leave out of the zip (optional, space separated
+    # list, default: API WMS_SRVC WFS_SRVC). Formats are compared
+    # case-insensitively, treating "_" and "-" as equal, and EU file-type URIs
+    # match their short name, e.g. WMS_SRVC also matches
+    # http://publications.europa.eu/resource/authority/file-type/WMS_SRVC
+    ckanext.downloadall.formats_to_ignore = API WMS_SRVC WFS_SRVC
+
 
 ----------------------
 Command-line interface

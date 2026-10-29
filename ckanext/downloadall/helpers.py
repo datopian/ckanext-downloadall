@@ -3,6 +3,10 @@ def pop_zip_resource(pkg):
     package and returns it. NB the package doesn't have the zip resource in it
     any more.
     '''
+    if not pkg:
+        # e.g. the new dataset form passes pkg={}; adding 'resources' would
+        # make it truthy and break the core resources snippet
+        return None
     zip_res = None
     non_zip_resources = []
     for res in pkg.get('resources', []):

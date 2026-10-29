@@ -108,7 +108,7 @@ class DownloadallPlugin(plugins.SingletonPlugin, DefaultTranslation):
 
     # IPackageController
 
-    def before_index(self, pkg_dict):
+    def before_dataset_index(self, pkg_dict):
         try:
             if u'All resource data' in pkg_dict['res_name']:
                 # we've got a 'Download all zip', so remove it's ZIP from the

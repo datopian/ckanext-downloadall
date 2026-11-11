@@ -358,6 +358,42 @@ def check_resource_size_limit(size, url):
     return True
 
 
+CHUNK_SIZE = 64 * 1024
+
+
+def _make_zipinfo(filename, metadata_modified):
+    zinfo = zipfile.ZipInfo(filename=filename)
+    date_time = parse_metadata_modified_to_date_time(metadata_modified)
+    if date_time:
+        zinfo.date_time = date_time
+    else:
+        zinfo.date_time = time.localtime()[:6]
+        log.warning('Using current time for {} - failed to parse '
+                    'metadata_modified'.format(filename))
+    zinfo.compress_type = zipfile.ZIP_DEFLATED
+    return zinfo
+
+
+def _stream_into_zip(read_chunk, zipf, zinfo):
+    """Copies chunks from `read_chunk()` (returns b'' at the end) into the zip
+    entry, hashing as it goes. Memory use is one chunk, whatever the file size.
+    """
+    hash_object = hashlib.md5()
+    size = 0
+    # force_zip64: the size is unknown up front, and entries over 4 GB fail
+    # without it.
+    with zipf.open(zinfo, 'w', force_zip64=True) as zf:
+        while True:
+            chunk = read_chunk()
+            if not chunk:
+                break
+            zf.write(chunk)
+            hash_object.update(chunk)
+            size += len(chunk)
+    return size, hash_object.hexdigest()
+
+
+
 def download_resource_into_zip(url, filename, zipf, resource_id=None,
                                package_id=None, metadata_modified=None):
     # Try to get the resource from local storage first
@@ -392,33 +428,16 @@ def download_resource_into_zip(url, filename, zipf, resource_id=None,
                     
                     log.debug('Using local file: {}'.format(filepath))
                     
-                    # Read file content
+                    zinfo = _make_zipinfo(
+                        filename, resource_metadata_modified)
+                    # Stream in chunks: reading a multi-GB file into memory
+                    # would get the background worker OOM-killed.
                     with open(filepath, 'rb') as local_file:
-                        file_content = local_file.read()
-                    
-                    # Calculate hash
-                    hash_object = hashlib.md5()
-                    hash_object.update(file_content)
-                    file_hash = hash_object.hexdigest()
-                    size = len(file_content)
-                    
-                    # Create ZipInfo with proper timestamp from resource_show
-                    zinfo = zipfile.ZipInfo(filename=filename)
-                    date_time = parse_metadata_modified_to_date_time(resource_metadata_modified)
-                    if date_time:
-                        zinfo.date_time = date_time
-                        log.info('Successfully set ZipInfo.date_time for {} to {} (from metadata_modified: {})'.format(
-                            filename, zinfo.date_time, resource_metadata_modified))
-                    else:
-                        # Fallback to current time if parsing fails
-                        zinfo.date_time = time.localtime()[:6]
-                        log.warning('Using current time for {} - failed to parse metadata_modified'.format(filename))
-                    zinfo.compress_type = zipfile.ZIP_DEFLATED
-                    
-                    # Use writestr to properly preserve timestamp
-                    zipf.writestr(zinfo, file_content)
-                    log.info('Wrote {} bytes to ZIP with filename "{}"'.format(len(file_content), filename))
-                    
+                        size, file_hash = _stream_into_zip(
+                            local_file.read, zipf, zinfo)
+                    log.info('Wrote {} bytes to ZIP with filename "{}"'
+                             .format(size, filename))
+
                     log.debug(
                         'Added from local storage: {}, hash: {}'
                         .format(format_bytes(size), file_hash))
@@ -458,19 +477,6 @@ def download_resource_into_zip(url, filename, zipf, resource_id=None,
                   .format(url=url, error=str(e)))
         raise DownloadError()
 
-    # Download content to memory
-    file_content = b''
-    hash_object = hashlib.md5()
-    
-    for chunk in r.iter_content(chunk_size=8192):
-        file_content += chunk
-        hash_object.update(chunk)
-    
-    size = len(file_content)
-    file_hash = hash_object.hexdigest()
-    
-    # Create ZipInfo with proper timestamp
-    # For remote resources, try to get metadata from resource_show if available
     resource_metadata_modified = None
     if resource_id:
         try:
@@ -489,21 +495,19 @@ def download_resource_into_zip(url, filename, zipf, resource_id=None,
             resource_metadata_modified = metadata_modified
     else:
         resource_metadata_modified = metadata_modified
-    
-    zinfo = zipfile.ZipInfo(filename=filename)
-    date_time = parse_metadata_modified_to_date_time(resource_metadata_modified)
-    if date_time:
-        zinfo.date_time = date_time
-        log.debug('Set timestamp for {} to {}'.format(filename, date_time))
-    else:
-        # Fallback to current time if parsing fails
-        zinfo.date_time = time.localtime()[:6]
-        log.warning('Using current time for {} - failed to parse metadata_modified'.format(filename))
-    zinfo.compress_type = zipfile.ZIP_DEFLATED
-    
-    # Use writestr to properly preserve timestamp
-    zipf.writestr(zinfo, file_content)
-    
+
+    chunks = r.iter_content(chunk_size=CHUNK_SIZE)
+    zinfo = _make_zipinfo(filename, resource_metadata_modified)
+    # A connection that drops mid-file must skip this resource, like the
+    # initial request errors above, not abort the whole zip.
+    try:
+        size, file_hash = _stream_into_zip(
+            lambda: next(chunks, b''), zipf, zinfo)
+    except requests.exceptions.RequestException as e:
+        log.error('URL {url} failed while downloading: {error}'
+                  .format(url=url, error=str(e)))
+        raise DownloadError()
+
     log.debug('Downloaded {}, hash: {}'
               .format(format_bytes(size), file_hash))
 

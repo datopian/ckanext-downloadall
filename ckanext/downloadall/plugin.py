@@ -43,6 +43,11 @@ class DownloadallPlugin(plugins.SingletonPlugin, DefaultTranslation):
         '''
         if operation == 'deleted':
             return
+        # dataset_purge flushes rows whose object is already gone, and CKAN
+        # notifies with entity None; the purge then failed with an
+        # AttributeError here. Nothing to zip for a purged dataset.
+        if entity is None:
+            return
 
         log.debug(u'{} {} \'{}\''
                   .format(operation, type(entity).__name__, entity.name))
@@ -70,7 +75,11 @@ class DownloadallPlugin(plugins.SingletonPlugin, DefaultTranslation):
                 # it being changed
                 log.debug('Ignoring change to zip resource')
                 return
-            dataset = entity.related_packages()[0]
+            datasets = entity.related_packages()
+            if not datasets:
+                # A resource whose dataset is being purged
+                return
+            dataset = datasets[0]
             enqueue_update_zip(dataset.name, dataset.id, operation)
         else:
             return

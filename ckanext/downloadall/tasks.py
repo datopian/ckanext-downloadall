@@ -17,7 +17,7 @@ from ckan import model
 from ckan.plugins.toolkit import get_action, config
 from ckan.lib import uploader
 
-from ckanext.downloadall.helpers import has_own_zip_resource
+from ckanext.downloadall.helpers import has_own_archive_resource
 
 
 log = __import__('logging').getLogger(__name__)
@@ -78,13 +78,13 @@ def update_zip(package_id, skip_if_no_changes=True):
     dataset = get_action('package_show')(context, {'id': package_id})
     log.debug('Updating zip: {}'.format(dataset['name']))
 
-    if has_own_zip_resource(dataset):
-        # The dataset already ships its own ZIP, so a generated one is a
+    if has_own_archive_resource(dataset):
+        # The dataset already ships its own archive, so a generated one is a
         # redundant zip-of-a-zip. Drop any we made before the ZIP was added.
         # Deleting notifies again, but the rerun finds nothing left to drop.
         for res in dataset['resources']:
             if res.get('downloadall_metadata_modified'):
-                log.info('Dataset has its own zip, removing generated zip: {}'
+                log.info('Dataset has its own archive, removing generated zip: {}'
                          .format(dataset['name']))
                 get_action('resource_delete')(context, {'id': res['id']})
         return

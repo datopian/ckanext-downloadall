@@ -44,3 +44,20 @@ def is_zip_up_to_date(pkg, zip_res):
         return False
     
     return zip_metadata_modified == pkg_metadata_modified
+
+
+def is_zip_resource(res):
+    '''True for a ZIP that someone published themselves (not our generated
+    one). Format is often empty or wrong on linked files, so the URL and
+    mimetype are checked too.
+    '''
+    if res.get('downloadall_metadata_modified'):
+        return False
+    url = (res.get('url') or '').split('?')[0].split('#')[0]
+    return ((res.get('format') or '').strip().upper() == 'ZIP' or
+            url.lower().endswith('.zip') or
+            'zip' in (res.get('mimetype') or '').lower())
+
+
+def has_own_zip_resource(pkg):
+    return any(is_zip_resource(res) for res in pkg.get('resources', []))

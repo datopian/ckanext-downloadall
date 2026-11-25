@@ -10,7 +10,12 @@ def pop_zip_resource(pkg):
             zip_res = res
         else:
             non_zip_resources.append(res)
-    pkg['resources'] = non_zip_resources
+    # Only write back when the package had resources. On the "new dataset"
+    # page the template passes pkg={}; adding a 'resources' key would make
+    # that empty dict truthy and CKAN's resources.html would then try to
+    # build an "Add new resource" link with no package type.
+    if 'resources' in pkg:
+        pkg['resources'] = non_zip_resources
     return zip_res
 
 
